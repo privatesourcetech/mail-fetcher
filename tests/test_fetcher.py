@@ -1,5 +1,6 @@
 import smtplib
 import tempfile
+import threading
 import unittest
 from datetime import date
 from pathlib import Path
@@ -57,8 +58,70 @@ def make_cfg(tmp):
         imap_user="me@example.com", imap_password="x", imap_cert="", imap_key="", imap_folder="INBOX", smtp_host="h", smtp_port=465,
         smtp_security="ssl", smtp_auth="plain", smtp_user="me@example.com",
         smtp_password="x", smtp_cert="", smtp_key="", smtp_from="me@example.com", dest="dest@proton.me", poll_seconds=1,
+        use_idle=True, idle_seconds=1,
         start_from=date(2026, 10, 10), data_dir=Path(tmp),
     )
+
+
+class FakeIdleImap:
+    """Just enough of imaplib for wait_for_mail: scripted server lines."""
+
+    def __init__(self, lines, uidnext=7, capabilities=("IMAP4REV1", "IDLE")):
+        self.capabilities = capabilities
+        self.lines = list(lines)
+        self.uidnext = uidnext
+        self.sent = []
+        self.sock = type("S", (), {"settimeout": lambda self, t: None})()
+
+    def select(self, folder, readonly=False):
+        return "OK", [b"1"]
+
+    def response(self, name):
+        return name, [str(self.uidnext).encode()]
+
+    def _new_tag(self):
+        return b"A1"
+
+    def send(self, data):
+        self.sent.append(data)
+
+    def readline(self):
+        if self.lines and self.lines[0] == b"DONE-REPLY":
+            if b"DONE\r\n" not in self.sent:
+                raise TimeoutError  # the server only answers after we send DONE
+            self.lines.pop(0)
+            return b"A1 OK IDLE terminated\r\n"
+        if not self.lines:
+            raise TimeoutError
+        return self.lines.pop(0)
+
+    def logout(self):
+        pass
+
+
+class IdleTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = make_cfg(self.tmp.name)
+        main.save_state(self.cfg, {"uidvalidity": 1, "last_uid": 6, "rejected": []})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_returns_on_exists_and_ends_idle(self):
+        imap = FakeIdleImap([b"+ idling\r\n", b"* 9 EXISTS\r\n", b"DONE-REPLY"])
+        main.wait_for_mail(self.cfg, threading.Event(), lambda _: imap)
+        self.assertEqual(imap.sent, [b"A1 IDLE\r\n", b"DONE\r\n"])
+
+    def test_returns_without_idling_when_mail_already_waiting(self):
+        imap = FakeIdleImap([], uidnext=8)  # UID 7 exists but last_uid is 6
+        main.wait_for_mail(self.cfg, threading.Event(), lambda _: imap)
+        self.assertEqual(imap.sent, [])
+
+    def test_idle_renews_after_timeout(self):
+        imap = FakeIdleImap([b"+ idling\r\n", b"DONE-REPLY"])
+        main.wait_for_mail(self.cfg, threading.Event(), lambda _: imap)
+        self.assertEqual(imap.sent, [b"A1 IDLE\r\n", b"DONE\r\n"])
 
 
 class PollTests(unittest.TestCase):

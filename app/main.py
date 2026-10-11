@@ -43,6 +43,8 @@ class Config:
     smtp_from: str
     dest: str
     poll_seconds: int
+    use_idle: bool
+    idle_seconds: int
     start_from: date | None
     data_dir: Path
 
@@ -107,6 +109,8 @@ def load_config(env=os.environ) -> Config:
         smtp_from=smtp_from,
         dest=need("DEST_ADDRESS"),
         poll_seconds=int(env.get("POLL_SECONDS", "300")),
+        use_idle=env.get("USE_IDLE", "true").strip().lower() not in ("0", "false", "no", "off"),
+        idle_seconds=int(env.get("IDLE_SECONDS", "300")),
         start_from=date.fromisoformat(start) if start else None,
         data_dir=Path(env.get("DATA_DIR", "/data")),
     )
@@ -251,6 +255,49 @@ def poll_once(cfg: Config, connect_imap=connect_imap, connect_smtp=connect_smtp)
     return sent
 
 
+def wait_for_mail(cfg: Config, stop: threading.Event, connect=connect_imap) -> None:
+    """Block until the server announces new mail (IMAP IDLE), IDLE_SECONDS pass or stop is set.
+
+    Only a wake-up hint: poll_once() does the real work. Falls back to a plain
+    sleep when the server has no IDLE.
+    """
+    imap = connect(cfg)
+    try:
+        if "IDLE" not in imap.capabilities:
+            stop.wait(cfg.poll_seconds)
+            return
+        imap.select(cfg.imap_folder, readonly=True)
+        state = load_state(cfg)
+        uidnext = int(imap.response("UIDNEXT")[1][0])
+        if state is None or uidnext - 1 > state["last_uid"]:
+            return  # mail arrived between the poll and now
+        tag = imap._new_tag()
+        imap.send(tag + b" IDLE\r\n")
+        if not imap.readline().startswith(b"+"):
+            stop.wait(cfg.poll_seconds)
+            return
+        imap.sock.settimeout(5)
+        deadline = time.monotonic() + cfg.idle_seconds
+        while not stop.is_set() and time.monotonic() < deadline:
+            try:
+                line = imap.readline()
+            except TimeoutError:
+                continue
+            if not line:
+                raise ConnectionError("server closed the connection during IDLE")
+            if line.rstrip().endswith(b"EXISTS"):
+                break
+        imap.sock.settimeout(60)
+        imap.send(b"DONE\r\n")
+        while not imap.readline().startswith(tag):
+            pass
+    finally:
+        try:
+            imap.logout()
+        except Exception:
+            pass
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = load_config()
@@ -258,14 +305,24 @@ def main() -> None:
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
-    log.info("polling %s@%s every %ds -> %s", cfg.imap_user, cfg.imap_host,
-             cfg.poll_seconds, cfg.dest)
+    log.info("watching %s@%s -> %s (%s)", cfg.imap_user, cfg.imap_host, cfg.dest,
+             f"IMAP IDLE, renewed every {cfg.idle_seconds}s" if cfg.use_idle
+             else f"polling every {cfg.poll_seconds}s")
     while not stop.is_set():
+        healthy = True
         try:
             poll_once(cfg)
             cfg.heartbeat_file.write_text(str(time.time()))
         except Exception as exc:
+            healthy = False
             log.error("poll failed: %s: %s", type(exc).__name__, exc)
+        if healthy and cfg.use_idle:
+            try:
+                wait_for_mail(cfg, stop)
+                continue
+            except Exception as exc:
+                log.warning("IDLE failed, falling back to a timed wait: %s: %s",
+                            type(exc).__name__, exc)
         stop.wait(cfg.poll_seconds)
 
 

@@ -46,6 +46,9 @@ namespace is not auto-detected; set `IMAP_FOLDER` if the mailbox isn't `INBOX`.
 ## Limits
 
 - One mailbox and one destination per container. Run another instance for more.
-- Polls on an interval (`POLL_SECONDS`, default 300); it does not use IMAP IDLE.
+- Uses IMAP IDLE to learn about new mail within seconds when the server supports it
+  (`USE_IDLE`, on by default); otherwise, and after any error, it falls back to
+  polling every `POLL_SECONDS` (default 300). IDLE is only a wake-up hint -- the
+  poll still does the actual relaying.
 - Relayed mail is sent through your provider's SMTP, so its sending limits and
   spam handling apply.
