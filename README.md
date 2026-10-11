@@ -15,7 +15,7 @@ provider offers no forwarding rule.
 - Prepends an `X-Mail-Fetcher-Source` header and leaves `To`, `Subject`, `Message-ID`
   and the body intact, so the receiving side can filter or label by source.
 - **Rewrites the visible `From`** (`REWRITE_FROM`, on by default) to the mailbox
-  address, shown as "Original Name via Mail Fetcher", with the real sender kept in
+  address, shown as "Original Name (original@address) via Mail Fetcher", with the real sender kept in
   `Reply-To` and `X-Original-From`. Without this, destinations that enforce
   DMARC/anti-spoofing (Proton does) silently drop mail whose `From` domain did not
   send it. Original DKIM/ARC/Authentication-Results headers are removed because

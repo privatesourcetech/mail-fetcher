@@ -247,7 +247,9 @@ def rewrite_from(raw: bytes, new_addr: str) -> bytes:
     name, addr = parseaddr(str(make_header(decode_header(orig_from))))
     if addr.lower() == new_addr.lower():
         return raw
-    display = f"{name or addr} via Mail Fetcher"
+    # Put the real address in the display name: the From address is this mailbox,
+    # so the destination otherwise never shows who actually wrote.
+    display = f"{name} ({addr}) via Mail Fetcher" if name and addr else f"{name or addr} via Mail Fetcher"
     new = [f"From: {formataddr((display, new_addr), charset='utf-8')}".encode(),
            f"X-Original-From: {orig_from}".encode()]
     if not has_reply_to and addr:
