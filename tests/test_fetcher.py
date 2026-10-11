@@ -97,12 +97,16 @@ class PollTests(unittest.TestCase):
 
     def test_config_accepts_k9_style_values_and_defaults_ports(self):
         env = {"IMAP_HOST": "h", "IMAP_USER": "u", "IMAP_PASSWORD": "p", "DEST_ADDRESS": "d",
-               "IMAP_SECURITY": "SSL/TLS", "SMTP_SECURITY": "STARTTLS"}
+               "IMAP_SECURITY": "SSL/TLS", "SMTP_SECURITY": "STARTTLS",
+               "SMTP_FROM": "u@example.com"}
         cfg = main.load_config(env)
         self.assertEqual((cfg.imap_security, cfg.imap_port), ("ssl", 993))
         self.assertEqual((cfg.smtp_security, cfg.smtp_port), ("starttls", 587))
         with self.assertRaises(SystemExit):
             main.load_config({**env, "IMAP_AUTH": "ntlm"})
+        with self.assertRaises(SystemExit):  # bare username can't be the envelope sender
+            main.load_config({k: v for k, v in env.items() if k != "SMTP_FROM"})
+        main.load_config({**env, "SMTP_FROM": "u@example.com"})
 
     def test_imap_date_ignores_locale(self):
         self.assertEqual(main.imap_date(date(2026, 10, 3)), "03-Oct-2026")

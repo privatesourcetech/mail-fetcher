@@ -74,6 +74,11 @@ def load_config(env=os.environ) -> Config:
         return value
 
     imap_user = need("IMAP_USER")
+    smtp_from = env.get("SMTP_FROM", "").strip() or imap_user
+    if "@" not in smtp_from:
+        raise SystemExit("SMTP_FROM (or IMAP_USER if unset) must be a full email address, "
+                         "e.g. you@example.com -- a bare username makes the SMTP server "
+                         "accept mail that the destination then rejects")
     start = env.get("START_FROM", "").strip()
     imap_security = _choice(env, "IMAP_SECURITY", "ssl", _SECURITY)
     smtp_security = _choice(env, "SMTP_SECURITY", "ssl", _SECURITY)
@@ -99,7 +104,7 @@ def load_config(env=os.environ) -> Config:
         smtp_password=env.get("SMTP_PASSWORD", "") or need("IMAP_PASSWORD"),
         smtp_cert=env.get("SMTP_CLIENT_CERT", "").strip(),
         smtp_key=env.get("SMTP_CLIENT_KEY", "").strip(),
-        smtp_from=env.get("SMTP_FROM", "").strip() or imap_user,
+        smtp_from=smtp_from,
         dest=need("DEST_ADDRESS"),
         poll_seconds=int(env.get("POLL_SECONDS", "300")),
         start_from=date.fromisoformat(start) if start else None,
