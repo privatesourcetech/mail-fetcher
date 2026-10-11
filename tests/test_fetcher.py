@@ -73,7 +73,7 @@ class RewriteTests(unittest.TestCase):
         out = main.rewrite_from(self.RAW, "me@braxmail.net")
         head, body = out.split(b"\r\n\r\n", 1)
         self.assertEqual(body, b"body\r\n\r\nmore\r\n")
-        self.assertIn(b"From: Brett Craig (a@gmail.com) via Mail Fetcher <me@braxmail.net>", head)
+        self.assertIn(b'From: "Brett Craig (a@gmail.com) via Mail Fetcher" <me@braxmail.net>', head)
         self.assertIn(b"Reply-To: Brett Craig <a@gmail.com>", head)
         self.assertIn(b"X-Original-From: Brett Craig <a@gmail.com>", head)
         self.assertIn(b"Subject: hi", head)
