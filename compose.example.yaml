@@ -1,0 +1,17 @@
+# Example only -- copy to compose.yaml (gitignored) and adjust paths for your host.
+# Put credentials in a .env file next to it (also gitignored), see README.
+services:
+  mail-fetcher:
+    image: ghcr.io/privatesourcetech/mail-fetcher:latest
+    pull_policy: always
+    container_name: mail-fetcher
+    restart: unless-stopped
+
+    env_file:
+      - /path/to/apps/mail-fetcher/.env
+
+    environment:
+      TZ: "UTC"
+
+    volumes:
+      - /path/to/apps/mail-fetcher/data:/data
