@@ -276,21 +276,27 @@ def wait_for_mail(cfg: Config, stop: threading.Event, connect=connect_imap) -> N
         if not imap.readline().startswith(b"+"):
             stop.wait(cfg.poll_seconds)
             return
-        imap.sock.settimeout(5)
+        # Read the socket directly: after a timeout, imaplib's buffered file
+        # object refuses all further reads ("cannot read from timed out object").
+        sock = imap.sock
+        sock.settimeout(5)
+        pending = b""
         deadline = time.monotonic() + cfg.idle_seconds
-        while not stop.is_set() and time.monotonic() < deadline:
+        while not stop.is_set() and time.monotonic() < deadline and b"EXISTS" not in pending:
             try:
-                line = imap.readline()
+                chunk = sock.recv(4096)
             except TimeoutError:
                 continue
-            if not line:
+            if not chunk:
                 raise ConnectionError("server closed the connection during IDLE")
-            if line.rstrip().endswith(b"EXISTS"):
-                break
-        imap.sock.settimeout(60)
+            pending += chunk
         imap.send(b"DONE\r\n")
-        while not imap.readline().startswith(tag):
-            pass
+        sock.settimeout(30)
+        while tag + b" " not in pending:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            pending += chunk
     finally:
         try:
             imap.logout()

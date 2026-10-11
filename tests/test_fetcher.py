@@ -64,14 +64,27 @@ def make_cfg(tmp):
 
 
 class FakeIdleImap:
-    """Just enough of imaplib for wait_for_mail: scripted server lines."""
+    """Just enough of imaplib for wait_for_mail: scripted server output."""
 
-    def __init__(self, lines, uidnext=7, capabilities=("IMAP4REV1", "IDLE")):
+    def __init__(self, chunks, uidnext=7, capabilities=("IMAP4REV1", "IDLE")):
         self.capabilities = capabilities
-        self.lines = list(lines)
+        self.chunks = list(chunks)
         self.uidnext = uidnext
         self.sent = []
-        self.sock = type("S", (), {"settimeout": lambda self, t: None})()
+        imap = self
+
+        class Sock:
+            def settimeout(self, t):
+                pass
+
+            def recv(self, n):
+                if b"DONE\r\n" in imap.sent:
+                    return b"A1 OK IDLE terminated\r\n"  # server answers only after DONE
+                if not imap.chunks:
+                    raise TimeoutError
+                return imap.chunks.pop(0)
+
+        self.sock = Sock()
 
     def select(self, folder, readonly=False):
         return "OK", [b"1"]
@@ -86,14 +99,7 @@ class FakeIdleImap:
         self.sent.append(data)
 
     def readline(self):
-        if self.lines and self.lines[0] == b"DONE-REPLY":
-            if b"DONE\r\n" not in self.sent:
-                raise TimeoutError  # the server only answers after we send DONE
-            self.lines.pop(0)
-            return b"A1 OK IDLE terminated\r\n"
-        if not self.lines:
-            raise TimeoutError
-        return self.lines.pop(0)
+        return b"+ idling\r\n"
 
     def logout(self):
         pass
@@ -109,7 +115,7 @@ class IdleTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_returns_on_exists_and_ends_idle(self):
-        imap = FakeIdleImap([b"+ idling\r\n", b"* 9 EXISTS\r\n", b"DONE-REPLY"])
+        imap = FakeIdleImap([b"* 9 EXISTS\r\n"])
         main.wait_for_mail(self.cfg, threading.Event(), lambda _: imap)
         self.assertEqual(imap.sent, [b"A1 IDLE\r\n", b"DONE\r\n"])
 
@@ -119,7 +125,7 @@ class IdleTests(unittest.TestCase):
         self.assertEqual(imap.sent, [])
 
     def test_idle_renews_after_timeout(self):
-        imap = FakeIdleImap([b"+ idling\r\n", b"DONE-REPLY"])
+        imap = FakeIdleImap([])
         main.wait_for_mail(self.cfg, threading.Event(), lambda _: imap)
         self.assertEqual(imap.sent, [b"A1 IDLE\r\n", b"DONE\r\n"])
 
