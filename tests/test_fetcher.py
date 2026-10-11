@@ -53,10 +53,10 @@ class FakeSmtp:
 
 def make_cfg(tmp):
     return main.Config(
-        imap_host="h", imap_port=993, imap_security="ssl", imap_user="me@example.com",
-        imap_password="x", imap_folder="INBOX", smtp_host="h", smtp_port=465,
-        smtp_security="ssl", smtp_user="me@example.com", smtp_password="x",
-        smtp_from="me@example.com", dest="dest@proton.me", poll_seconds=1,
+        imap_host="h", imap_port=993, imap_security="ssl", imap_auth="plain",
+        imap_user="me@example.com", imap_password="x", imap_cert="", imap_key="", imap_folder="INBOX", smtp_host="h", smtp_port=465,
+        smtp_security="ssl", smtp_auth="plain", smtp_user="me@example.com",
+        smtp_password="x", smtp_cert="", smtp_key="", smtp_from="me@example.com", dest="dest@proton.me", poll_seconds=1,
         start_from=date(2026, 10, 10), data_dir=Path(tmp),
     )
 
@@ -94,6 +94,15 @@ class PollTests(unittest.TestCase):
             self.assertEqual(self.run_poll(cfg, imap, FakeSmtp(bad)), 0)
             self.assertEqual(main.load_state(cfg)["rejected"], [1, 2])
             self.assertEqual(self.run_poll(cfg, imap, FakeSmtp()), 0)
+
+    def test_config_accepts_k9_style_values_and_defaults_ports(self):
+        env = {"IMAP_HOST": "h", "IMAP_USER": "u", "IMAP_PASSWORD": "p", "DEST_ADDRESS": "d",
+               "IMAP_SECURITY": "SSL/TLS", "SMTP_SECURITY": "STARTTLS"}
+        cfg = main.load_config(env)
+        self.assertEqual((cfg.imap_security, cfg.imap_port), ("ssl", 993))
+        self.assertEqual((cfg.smtp_security, cfg.smtp_port), ("starttls", 587))
+        with self.assertRaises(SystemExit):
+            main.load_config({**env, "IMAP_AUTH": "ntlm"})
 
     def test_imap_date_ignores_locale(self):
         self.assertEqual(main.imap_date(date(2026, 10, 3)), "03-Oct-2026")

@@ -24,6 +24,13 @@ provider offers no forwarding rule.
 All settings are environment variables; see `.env.example`. Credentials go in an
 untracked `.env`, never in `compose.yaml`.
 
+Incoming and outgoing servers each take host, security (`ssl`/`starttls`/`none`),
+port, authentication (`plain` or `cram-md5`; SMTP also `none`), username,
+password and an optional client certificate (paths to files mounted in the
+container). Not supported: NTLM and OAuth2 authentication, IMAP compression,
+and sending client information -- none are needed to relay mail. The IMAP
+namespace is not auto-detected; set `IMAP_FOLDER` if the mailbox isn't `INBOX`.
+
 ## Deploying (TrueNAS)
 
 1. Create a dataset for the app in the TrueNAS UI.

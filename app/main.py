@@ -26,14 +26,20 @@ class Config:
     imap_host: str
     imap_port: int
     imap_security: str
+    imap_auth: str
     imap_user: str
     imap_password: str
+    imap_cert: str
+    imap_key: str
     imap_folder: str
     smtp_host: str
     smtp_port: int
     smtp_security: str
+    smtp_auth: str
     smtp_user: str
     smtp_password: str
+    smtp_cert: str
+    smtp_key: str
     smtp_from: str
     dest: str
     poll_seconds: int
@@ -49,6 +55,17 @@ class Config:
         return self.data_dir / "heartbeat"
 
 
+_SECURITY = {"ssl": "ssl", "tls": "ssl", "ssl/tls": "ssl", "starttls": "starttls", "none": "none"}
+_AUTH = {"plain": "plain", "password": "plain", "cram-md5": "cram-md5", "none": "none"}
+
+
+def _choice(env, key, default, table):
+    value = env.get(key, default).strip().lower()
+    if value not in table:
+        raise SystemExit(f"{key} must be one of: {', '.join(sorted(table))} (got {value!r})")
+    return table[value]
+
+
 def load_config(env=os.environ) -> Config:
     def need(key):
         value = env.get(key, "").strip()
@@ -58,18 +75,30 @@ def load_config(env=os.environ) -> Config:
 
     imap_user = need("IMAP_USER")
     start = env.get("START_FROM", "").strip()
+    imap_security = _choice(env, "IMAP_SECURITY", "ssl", _SECURITY)
+    smtp_security = _choice(env, "SMTP_SECURITY", "ssl", _SECURITY)
+    smtp_auth = _choice(env, "SMTP_AUTH", "plain", _AUTH)
+    imap_auth = _choice(env, "IMAP_AUTH", "plain", _AUTH)
+    if imap_auth == "none":
+        raise SystemExit("IMAP_AUTH cannot be none")
     return Config(
         imap_host=need("IMAP_HOST"),
-        imap_port=int(env.get("IMAP_PORT", "993")),
-        imap_security=env.get("IMAP_SECURITY", "ssl").lower(),
+        imap_port=int(env.get("IMAP_PORT", "993" if imap_security == "ssl" else "143")),
+        imap_security=imap_security,
+        imap_auth=imap_auth,
         imap_user=imap_user,
         imap_password=need("IMAP_PASSWORD"),
+        imap_cert=env.get("IMAP_CLIENT_CERT", "").strip(),
+        imap_key=env.get("IMAP_CLIENT_KEY", "").strip(),
         imap_folder=env.get("IMAP_FOLDER", "INBOX"),
         smtp_host=env.get("SMTP_HOST", "").strip() or need("IMAP_HOST"),
-        smtp_port=int(env.get("SMTP_PORT", "465")),
-        smtp_security=env.get("SMTP_SECURITY", "ssl").lower(),
+        smtp_port=int(env.get("SMTP_PORT", {"ssl": "465", "starttls": "587"}.get(smtp_security, "25"))),
+        smtp_security=smtp_security,
+        smtp_auth=smtp_auth,
         smtp_user=env.get("SMTP_USER", "").strip() or imap_user,
         smtp_password=env.get("SMTP_PASSWORD", "") or need("IMAP_PASSWORD"),
+        smtp_cert=env.get("SMTP_CLIENT_CERT", "").strip(),
+        smtp_key=env.get("SMTP_CLIENT_KEY", "").strip(),
         smtp_from=env.get("SMTP_FROM", "").strip() or imap_user,
         dest=need("DEST_ADDRESS"),
         poll_seconds=int(env.get("POLL_SECONDS", "300")),
@@ -83,27 +112,41 @@ def imap_date(d: date) -> str:
     return f"{d.day:02d}-{_MONTHS[d.month - 1]}-{d.year}"
 
 
-def connect_imap(cfg: Config) -> imaplib.IMAP4:
+def tls_context(cert: str, key: str) -> ssl.SSLContext:
     ctx = ssl.create_default_context()
+    if cert:
+        ctx.load_cert_chain(cert, key or None)
+    return ctx
+
+
+def connect_imap(cfg: Config) -> imaplib.IMAP4:
+    ctx = tls_context(cfg.imap_cert, cfg.imap_key)
     if cfg.imap_security == "ssl":
         conn = imaplib.IMAP4_SSL(cfg.imap_host, cfg.imap_port, ssl_context=ctx)
     else:
         conn = imaplib.IMAP4(cfg.imap_host, cfg.imap_port)
         if cfg.imap_security == "starttls":
             conn.starttls(ssl_context=ctx)
-    conn.login(cfg.imap_user, cfg.imap_password)
+    if cfg.imap_auth == "cram-md5":
+        conn.login_cram_md5(cfg.imap_user, cfg.imap_password)
+    else:
+        conn.login(cfg.imap_user, cfg.imap_password)
     return conn
 
 
 def connect_smtp(cfg: Config) -> smtplib.SMTP:
-    ctx = ssl.create_default_context()
+    ctx = tls_context(cfg.smtp_cert, cfg.smtp_key)
     if cfg.smtp_security == "ssl":
         conn = smtplib.SMTP_SSL(cfg.smtp_host, cfg.smtp_port, context=ctx, timeout=60)
     else:
         conn = smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=60)
         if cfg.smtp_security == "starttls":
             conn.starttls(context=ctx)
-    conn.login(cfg.smtp_user, cfg.smtp_password)
+    if cfg.smtp_auth == "cram-md5":
+        conn.user, conn.password = cfg.smtp_user, cfg.smtp_password  # read by auth_cram_md5
+        conn.auth("CRAM-MD5", conn.auth_cram_md5)
+    elif cfg.smtp_auth == "plain":
+        conn.login(cfg.smtp_user, cfg.smtp_password)
     return conn
 
 
