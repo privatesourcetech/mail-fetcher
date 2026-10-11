@@ -12,8 +12,14 @@ provider offers no forwarding rule.
   starts at the first message on/after `START_FROM` (default: yesterday), so it
   never replays the whole mailbox. The start date overlaps on purpose -- a
   duplicate is better than a hole.
-- Prepends an `X-Mail-Fetcher-Source` header and leaves the original headers
-  (including `To`) intact, so the receiving side can filter or label by source.
+- Prepends an `X-Mail-Fetcher-Source` header and leaves `To`, `Subject`, `Message-ID`
+  and the body intact, so the receiving side can filter or label by source.
+- **Rewrites the visible `From`** (`REWRITE_FROM`, on by default) to the mailbox
+  address, shown as "Original Name via Mail Fetcher", with the real sender kept in
+  `Reply-To` and `X-Original-From`. Without this, destinations that enforce
+  DMARC/anti-spoofing (Proton does) silently drop mail whose `From` domain did not
+  send it. Original DKIM/ARC/Authentication-Results headers are removed because
+  they no longer verify. The body is not touched.
 - Transient failures (network, 4xx) stop the cycle and retry in order. A
   permanent rejection (5xx) is logged, recorded under `rejected` in the state file
   and skipped so one bad message can't block the queue.

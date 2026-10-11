@@ -58,9 +58,36 @@ def make_cfg(tmp):
         imap_user="me@example.com", imap_password="x", imap_cert="", imap_key="", imap_folder="INBOX", smtp_host="h", smtp_port=465,
         smtp_security="ssl", smtp_auth="plain", smtp_user="me@example.com",
         smtp_password="x", smtp_cert="", smtp_key="", smtp_from="me@example.com", dest="dest@proton.me", poll_seconds=1,
-        use_idle=True, idle_seconds=1,
+        rewrite_from=True, use_idle=True, idle_seconds=1,
         start_from=date(2026, 10, 10), data_dir=Path(tmp),
     )
+
+
+class RewriteTests(unittest.TestCase):
+    RAW = (b"Return-Path: <a@gmail.com>\r\nDelivered-To: me@bytz.me\r\n"
+           b"DKIM-Signature: v=1; d=gmail.com;\r\n\tb=abc\r\n"
+           b"From: Brett Craig <a@gmail.com>\r\nTo: me@bytz.me\r\nSubject: hi\r\n"
+           b"Content-Type: text/plain\r\n\r\nbody\r\n\r\nmore\r\n")
+
+    def test_rewrites_from_keeps_body_and_sets_reply_to(self):
+        out = main.rewrite_from(self.RAW, "me@braxmail.net")
+        head, body = out.split(b"\r\n\r\n", 1)
+        self.assertEqual(body, b"body\r\n\r\nmore\r\n")
+        self.assertIn(b"From: Brett Craig via Mail Fetcher <me@braxmail.net>", head)
+        self.assertIn(b"Reply-To: Brett Craig <a@gmail.com>", head)
+        self.assertIn(b"X-Original-From: Brett Craig <a@gmail.com>", head)
+        self.assertIn(b"Subject: hi", head)
+        for gone in (b"Return-Path", b"Delivered-To", b"DKIM-Signature", b"b=abc"):
+            self.assertNotIn(gone, head)
+
+    def test_existing_reply_to_is_kept_and_own_mail_is_untouched(self):
+        raw = b"From: a@gmail.com\nReply-To: list@x.org\nSubject: s\n\nbody\n"
+        out = main.rewrite_from(raw, "me@braxmail.net")
+        self.assertEqual(out.count(b"Reply-To"), 1)
+        self.assertIn(b"Reply-To: list@x.org", out)
+        self.assertIn(b"\n\nbody\n", out)
+        mine = b"From: me@braxmail.net\r\nSubject: s\r\n\r\nbody\r\n"
+        self.assertEqual(main.rewrite_from(mine, "me@braxmail.net"), mine)
 
 
 class FakeIdleImap:

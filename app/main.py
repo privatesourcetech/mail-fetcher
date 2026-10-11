@@ -7,6 +7,7 @@ import imaplib
 import json
 import logging
 import os
+import re
 import signal
 import smtplib
 import ssl
@@ -14,6 +15,8 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import date, timedelta
+from email.header import decode_header, make_header
+from email.utils import formataddr, parseaddr
 from pathlib import Path
 
 log = logging.getLogger("mail-fetcher")
@@ -43,6 +46,7 @@ class Config:
     smtp_from: str
     dest: str
     poll_seconds: int
+    rewrite_from: bool
     use_idle: bool
     idle_seconds: int
     start_from: date | None
@@ -109,6 +113,7 @@ def load_config(env=os.environ) -> Config:
         smtp_from=smtp_from,
         dest=need("DEST_ADDRESS"),
         poll_seconds=int(env.get("POLL_SECONDS", "300")),
+        rewrite_from=env.get("REWRITE_FROM", "true").strip().lower() not in ("0", "false", "no", "off"),
         use_idle=env.get("USE_IDLE", "true").strip().lower() not in ("0", "false", "no", "off"),
         idle_seconds=int(env.get("IDLE_SECONDS", "300")),
         start_from=date.fromisoformat(start) if start else None,
@@ -196,7 +201,63 @@ def initial_state(cfg: Config, imap, uidvalidity: int) -> dict:
     return {"uidvalidity": uidvalidity, "last_uid": last_uid, "rejected": []}
 
 
+# Headers that stop being true (or would fail verification) once the message is
+# re-sent from this server with a different From.
+_STRIP = re.compile(rb"^(return-path|delivered-to|dkim-signature|authentication-results|"
+                    rb"received-spf|arc-[a-z-]+|x-original-from)$", re.I)
+
+
+def split_headers(raw: bytes) -> tuple[list[bytes], bytes, bytes]:
+    """Return (logical header fields incl. folded lines, line ending, body incl. blank line)."""
+    m = re.search(rb"\r?\n\r?\n", raw)
+    head, sep_body = (raw[:m.start()], raw[m.start():]) if m else (raw, b"")
+    eol = b"\r\n" if b"\r\n" in head or sep_body.startswith(b"\r\n") else b"\n"
+    fields: list[bytes] = []
+    for line in head.splitlines(keepends=True):
+        if line[:1] in b" \t" and fields:
+            fields[-1] += line
+        else:
+            fields.append(line)
+    fields = [f.rstrip(b"\r\n") for f in fields]
+    return fields, eol, sep_body
+
+
+def rewrite_from(raw: bytes, new_addr: str) -> bytes:
+    """Make the visible sender this mailbox so the destination's DMARC/spoofing
+    checks pass; the real sender moves to Reply-To / X-Original-From.
+
+    Only the header block is touched, so MIME bodies pass through byte for byte.
+    """
+    fields, eol, rest = split_headers(raw)
+    kept, orig_from, has_reply_to = [], None, False
+    for f in fields:
+        name = f.split(b":", 1)[0].strip()
+        lname = name.lower()
+        if lname == b"from":
+            orig_from = f.split(b":", 1)[1].decode("utf-8", "replace")
+            continue
+        if lname == b"reply-to":
+            has_reply_to = True
+        if _STRIP.match(name):
+            continue
+        kept.append(f)
+    if orig_from is None:
+        return raw
+    orig_from = " ".join(orig_from.split())
+    name, addr = parseaddr(str(make_header(decode_header(orig_from))))
+    if addr.lower() == new_addr.lower():
+        return raw
+    display = f"{name or addr} via Mail Fetcher"
+    new = [f"From: {formataddr((display, new_addr), charset='utf-8')}".encode(),
+           f"X-Original-From: {orig_from}".encode()]
+    if not has_reply_to and addr:
+        new.append(f"Reply-To: {orig_from}".encode())
+    return eol.join(new + kept) + rest
+
+
 def relay(smtp: smtplib.SMTP, cfg: Config, raw: bytes) -> None:
+    if cfg.rewrite_from:
+        raw = rewrite_from(raw, cfg.smtp_from)
     tag = f"X-Mail-Fetcher-Source: {cfg.imap_user}\r\n".encode()
     smtp.sendmail(cfg.smtp_from, [cfg.dest], tag + raw)
 
