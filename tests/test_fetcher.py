@@ -70,7 +70,7 @@ class RewriteTests(unittest.TestCase):
            b"Content-Type: text/plain\r\n\r\nbody\r\n\r\nmore\r\n")
 
     def test_rewrites_from_keeps_body_and_sets_reply_to(self):
-        out = main.rewrite_from(self.RAW, "me@braxmail.net")
+        out = main.prepare(self.RAW, "me@braxmail.net")
         head, body = out.split(b"\r\n\r\n", 1)
         self.assertEqual(body, b"body\r\n\r\nmore\r\n")
         self.assertIn(b'From: "Brett Craig (a@gmail.com) via Mail Fetcher" <me@braxmail.net>', head)
@@ -82,12 +82,18 @@ class RewriteTests(unittest.TestCase):
 
     def test_existing_reply_to_is_kept_and_own_mail_is_untouched(self):
         raw = b"From: a@gmail.com\nReply-To: list@x.org\nSubject: s\n\nbody\n"
-        out = main.rewrite_from(raw, "me@braxmail.net")
+        out = main.prepare(raw, "me@braxmail.net")
         self.assertEqual(out.count(b"Reply-To"), 1)
         self.assertIn(b"Reply-To: list@x.org", out)
         self.assertIn(b"\n\nbody\n", out)
-        mine = b"From: me@braxmail.net\r\nSubject: s\r\n\r\nbody\r\n"
-        self.assertEqual(main.rewrite_from(mine, "me@braxmail.net"), mine)
+
+    def test_own_mail_keeps_from_but_loses_dkim_signature(self):
+        # Regression: mail sent from the mailbox itself carried its provider's DKIM
+        # signature; the relay adds a second one and Amazon SES rejects duplicates.
+        mine = (b"Return-Path: <me@braxmail.net>\r\nDKIM-Signature: v=1; d=braxmail.net;\r\n b=x\r\n"
+                b"From: me@braxmail.net\r\nSubject: s\r\n\r\nbody\r\n")
+        out = main.prepare(mine, "me@braxmail.net")
+        self.assertEqual(out, b"From: me@braxmail.net\r\nSubject: s\r\n\r\nbody\r\n")
 
 
 class FakeIdleImap:

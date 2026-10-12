@@ -222,31 +222,38 @@ def split_headers(raw: bytes) -> tuple[list[bytes], bytes, bytes]:
     return fields, eol, sep_body
 
 
-def rewrite_from(raw: bytes, new_addr: str) -> bytes:
-    """Make the visible sender this mailbox so the destination's DMARC/spoofing
-    checks pass; the real sender moves to Reply-To / X-Original-From.
+def prepare(raw: bytes, new_addr: str, rewrite: bool = True) -> bytes:
+    """Make a fetched message safe to send again from this server.
 
-    Only the header block is touched, so MIME bodies pass through byte for byte.
+    Always drops headers that cannot be valid on the re-sent copy -- above all
+    DKIM-Signature: the relaying server adds its own, and some downstream hops
+    (Amazon SES, for one) reject a message with two ("Duplicate header
+    'DKIM-Signature'"). If the visible sender is not this mailbox, also make it
+    this mailbox so the relay's sender checks pass; the real sender moves to
+    Reply-To / X-Original-From. Only the header block is touched, so MIME
+    bodies pass through byte for byte.
     """
     fields, eol, rest = split_headers(raw)
-    kept, orig_from, has_reply_to = [], None, False
+    from_field = next((f for f in fields if f.split(b":", 1)[0].strip().lower() == b"from"), None)
+    orig_from = name = addr = None
+    if from_field is not None:
+        orig_from = " ".join(from_field.split(b":", 1)[1].decode("utf-8", "replace").split())
+        name, addr = parseaddr(str(make_header(decode_header(orig_from))))
+    do_rewrite = rewrite and from_field is not None and (addr or "").lower() != new_addr.lower()
+
+    kept, has_reply_to = [], False
     for f in fields:
-        name = f.split(b":", 1)[0].strip()
-        lname = name.lower()
-        if lname == b"from":
-            orig_from = f.split(b":", 1)[1].decode("utf-8", "replace")
+        hname = f.split(b":", 1)[0].strip()
+        lname = hname.lower()
+        if lname == b"from" and do_rewrite:
             continue
         if lname == b"reply-to":
             has_reply_to = True
-        if _STRIP.match(name):
+        if _STRIP.match(hname):
             continue
         kept.append(f)
-    if orig_from is None:
-        return raw
-    orig_from = " ".join(orig_from.split())
-    name, addr = parseaddr(str(make_header(decode_header(orig_from))))
-    if addr.lower() == new_addr.lower():
-        return raw
+    if not do_rewrite:
+        return eol.join(kept) + rest
     # Put the real address in the display name: the From address is this mailbox,
     # so the destination otherwise never shows who actually wrote.
     display = f"{name} ({addr}) via Mail Fetcher" if name and addr else f"{name or addr} via Mail Fetcher"
@@ -258,8 +265,7 @@ def rewrite_from(raw: bytes, new_addr: str) -> bytes:
 
 
 def relay(smtp: smtplib.SMTP, cfg: Config, raw: bytes) -> None:
-    if cfg.rewrite_from:
-        raw = rewrite_from(raw, cfg.smtp_from)
+    raw = prepare(raw, cfg.smtp_from, cfg.rewrite_from)
     tag = f"X-Mail-Fetcher-Source: {cfg.imap_user}\r\n".encode()
     smtp.sendmail(cfg.smtp_from, [cfg.dest], tag + raw)
 
